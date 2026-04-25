@@ -216,6 +216,13 @@
         color: var(--muted);
       }
 
+      .guidance-line {
+        margin-top: 8px;
+        font-size: 0.95rem;
+        color: #26472c;
+        font-weight: 600;
+      }
+
       @media (prefers-reduced-motion: reduce) {
         * {
           transition: none !important;
@@ -231,6 +238,13 @@
 
       .audio-controls {
         margin-top: 10px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .voice-controls {
+        margin-top: 8px;
         display: flex;
         flex-wrap: wrap;
         gap: 8px;
@@ -533,10 +547,15 @@
         </p>
 
         <div class="controls">
-          <button id="capture-btn" type="button">Capture Flower</button>
+          <button id="capture-btn" type="button">Capture</button>
           <input id="photo-input" type="file" accept="image/*" capture="environment" style="display:none" />
           <span class="status status-neutral" id="status" aria-live="polite">idle</span>
         </div>
+        <div class="voice-controls">
+          <button id="voice-start-btn" class="secondary-btn" type="button">Start Voice Command</button>
+          <button id="voice-stop-btn" class="secondary-btn" type="button">Stop Voice Command</button>
+        </div>
+        <p class="guidance-line" id="guidance-line" aria-live="polite">Loading capture mode...</p>
 
         <p class="health-line" id="health-line" aria-live="polite">
           System health: checking...
@@ -573,17 +592,25 @@
       const photoInput = document.getElementById("photo-input");
       const photoPreview = document.getElementById("photo-preview");
       const previewPlaceholder = document.getElementById("preview-placeholder");
+      const guidanceLineEl = document.getElementById("guidance-line");
       const statusEl = document.getElementById("status");
       const healthLineEl = document.getElementById("health-line");
       const descEl = document.getElementById("desc");
       const speakBtn = document.getElementById("speak-btn");
       const stopSpeechBtn = document.getElementById("stop-speech-btn");
+      const voiceStartBtn = document.getElementById("voice-start-btn");
+      const voiceStopBtn = document.getElementById("voice-stop-btn");
       const jsonEl = document.getElementById("json");
       const srUpdatesEl = document.getElementById("sr-updates");
 
       let synth;
       let speechEnabled = "speechSynthesis" in window;
       let activeUtterance = null;
+      let captureMode = "mobile";
+      let webcamReady = false;
+      const SpeechRecognitionApi = window.SpeechRecognition || window.webkitSpeechRecognition;
+      let recognition = null;
+      let voiceEnabled = false;
 
       function setStatus(text, level = "neutral") {
         statusEl.textContent = text;
@@ -624,6 +651,22 @@
         };
         activeUtterance = utterance;
         window.speechSynthesis.speak(utterance);
+      }
+
+      function speakGuidance(text) {
+        if (!speechEnabled) return;
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = 0.95;
+        utterance.pitch = 1.0;
+        window.speechSynthesis.speak(utterance);
+      }
+
+      function triggerCaptureFromCurrentMode() {
+        if (webcamReady || captureMode === "webcam") {
+          captureFromWebcam();
+        } else {
+          photoInput.click();
+        }
       }
 
       async function playMusic(music) {
@@ -667,13 +710,24 @@
           const response = await fetch("/health");
           const health = await response.json();
           const provider = health?.provider?.provider || "unknown";
-          const cameraReady = health?.camera_required
+          webcamReady = Boolean(health?.camera?.ok);
+          const cameraRequired = Boolean(health?.camera_required);
+          captureMode = cameraRequired ? "webcam" : "mobile";
+          const cameraReady = cameraRequired
             ? (health?.camera?.ok ? "camera ready" : "camera not ready")
             : "mobile camera mode";
           const providerReady = health?.provider?.ok ? "provider ready" : "provider not ready";
           healthLineEl.textContent = `System health: ${provider} | ${providerReady} | ${cameraReady}`;
+          button.textContent = "Capture";
+          if (webcamReady) {
+            guidanceLineEl.textContent = "Accessibility: press the big button or press C on keyboard to capture.";
+          } else {
+            guidanceLineEl.textContent = "Accessibility: webcam unavailable, button opens phone camera. Press C as shortcut.";
+          }
         } catch (err) {
           healthLineEl.textContent = "System health: unavailable";
+          button.textContent = "Capture";
+          guidanceLineEl.textContent = "Press Capture button to start.";
         }
       }
 
@@ -721,6 +775,37 @@
         }
       }
 
+      async function captureFromWebcam() {
+        setStatus("capturing...", "neutral");
+        button.disabled = true;
+        try {
+          const response = await fetch("/trigger", { method: "POST" });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || "Webcam capture failed");
+
+          if (data.image_url) {
+            photoPreview.src = data.image_url;
+            photoPreview.style.display = "block";
+            previewPlaceholder.style.display = "none";
+          }
+
+          descEl.textContent = data.sensory_description || "";
+          speakDescription(descEl.textContent);
+          jsonEl.textContent = JSON.stringify(data.music || {}, null, 2);
+          setStatus(
+            data.haptic?.forwarded ? "played + vibrated + sent to Pico" : "played + vibrated",
+            data.haptic?.forwarded ? "good" : "neutral"
+          );
+
+          await playMusic(data.music || {});
+        } catch (err) {
+          setStatus("error", "bad");
+          descEl.textContent = err.message || "Unknown error";
+        } finally {
+          button.disabled = false;
+        }
+      }
+
       if (!speechEnabled) {
         speakBtn.disabled = true;
         stopSpeechBtn.disabled = true;
@@ -733,7 +818,7 @@
       }
 
       button.addEventListener("click", () => {
-        photoInput.click();
+        triggerCaptureFromCurrentMode();
       });
 
       photoInput.addEventListener("change", async (event) => {
@@ -747,8 +832,71 @@
 
         await captureAndPlay(file);
       });
+      document.addEventListener("keydown", (event) => {
+        if (event.key.toLowerCase() !== "c") return;
+        triggerCaptureFromCurrentMode();
+      });
+
+      if (!SpeechRecognitionApi) {
+        voiceStartBtn.disabled = true;
+        voiceStopBtn.disabled = true;
+      } else {
+        recognition = new SpeechRecognitionApi();
+        recognition.continuous = true;
+        recognition.interimResults = false;
+        recognition.lang = "en-US";
+
+        recognition.onresult = (event) => {
+          const idx = event.results.length - 1;
+          const heard = event.results[idx][0].transcript.trim().toLowerCase();
+          if (heard.includes("capture") || heard.includes("scan")) {
+            setStatus("voice command heard: capture", "good");
+            triggerCaptureFromCurrentMode();
+          }
+        };
+
+        recognition.onerror = () => {
+          if (voiceEnabled) setStatus("voice command error", "bad");
+        };
+
+        recognition.onend = () => {
+          if (voiceEnabled) {
+            try {
+              recognition.start();
+            } catch (_err) {
+              // Browser may throttle restart; ignore safely.
+            }
+          }
+        };
+
+        voiceStartBtn.addEventListener("click", () => {
+          if (voiceEnabled) return;
+          voiceEnabled = true;
+          try {
+            recognition.start();
+            setStatus("voice command listening", "good");
+            speakGuidance("Voice command is on. Say capture to take a photo.");
+          } catch (_err) {
+            voiceEnabled = false;
+            setStatus("unable to start voice command", "bad");
+          }
+        });
+
+        voiceStopBtn.addEventListener("click", () => {
+          voiceEnabled = false;
+          try {
+            recognition.stop();
+          } catch (_err) {
+            // Safe no-op if recognition is not running.
+          }
+          setStatus("voice command stopped", "neutral");
+        });
+      }
       refreshHealth();
       setInterval(refreshHealth, 8000);
+      setTimeout(() => {
+        speakGuidance("Capture is ready. Press the big capture button, or press C.");
+      }, 900);
     </script>
   </body>
 </html>

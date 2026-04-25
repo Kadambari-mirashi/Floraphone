@@ -185,7 +185,7 @@ This means even before cache reuse, the same extracted attributes map to the sam
 - Auto health polling in UI every 8 seconds to show readiness before interaction
 - Description is read aloud via browser speech synthesis after each capture
 - Manual voice controls are available in UI (`Read Aloud`, `Stop Voice`)
-- Animation toggle is available (`Pause Animations`) and reduced-motion settings are respected
+- Optional voice command is available in supported browsers (`Start Voice Command`, say "capture")
 
 ## Notes
 
