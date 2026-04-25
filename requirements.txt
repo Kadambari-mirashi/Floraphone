@@ -1,0 +1,5 @@
+anthropic
+Flask
+flask-cors
+opencv-python
+requests
